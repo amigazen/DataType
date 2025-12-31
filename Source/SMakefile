@@ -1,0 +1,45 @@
+# SMakefile for DataType
+# 
+# DataType - Query file datatype and launch associated tools
+#
+
+# Program name
+PROGRAM = DataType
+
+# Source files
+SRCS = datatype.c
+
+# Object files
+OBJS = datatype.o
+
+# Compiler and linker
+CC = sc
+LINK = slink
+
+# Default target
+all: $(PROGRAM)
+
+# Create the DataType executable
+$(PROGRAM): $(OBJS)
+	$(LINK) FROM sc:lib/c.o $(OBJS) TO $(PROGRAM) STRIPDEBUG NODEBUG LIB lib:small.lib sc:lib/sc.lib BATCH
+
+# Compile the source files
+.c.o:
+	$(CC) $*.c OBJNAME=$*.o IDIR=include:
+
+# Compile DataType files
+datatype.o: datatype.c
+	$(CC) datatype.c OBJNAME=datatype.o IDIR=include:
+
+# Clean target
+clean:
+	Delete $(OBJS) $(PROGRAM) datatype.o
+
+# Install target
+install:
+	@echo "Installing DataType to SDK/C..."
+	@copy $(PROGRAM) to /SDK/C/$(PROGRAM) CLONE
+
+# Dependencies
+datatype.o: datatype.c
+
