@@ -10,6 +10,7 @@
 #include <dos/dos.h>
 #include <intuition/intuition.h>
 #include <intuition/intuitionbase.h>
+#include <workbench/icon.h>
 #include <datatypes/datatypes.h>
 #include <datatypes/datatypesclass.h>
 #include <datatypes/animationclass.h>
@@ -55,6 +56,7 @@ ULONG LaunchToolA(struct Tool *, STRPTR, struct TagItem *);
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include <proto/intuition.h>
+#include <proto/icon.h>
 #include <proto/datatypes.h>
 #include <proto/iffparse.h>
 #include <proto/utility.h>
@@ -65,6 +67,7 @@ ULONG LaunchToolA(struct Tool *, STRPTR, struct TagItem *);
 extern struct ExecBase *SysBase;
 extern struct DosLibrary *DOSBase;
 extern struct IntuitionBase *IntuitionBase;
+extern struct Library *IconBase;
 extern struct Library *DataTypesBase;
 extern struct Library *UtilityBase;
 extern struct Library *IFFParseBase;
@@ -94,8 +97,11 @@ BOOL FindToolInDTYPFile(struct DataType *dtn, UWORD toolType, struct Tool *toolO
 STRPTR FindDTYPFilePath(STRPTR baseName);
 BOOL ParseToolFromDTYP(STRPTR dtypPath, UWORD toolType, struct Tool *toolOut);
 VOID LaunchToolForFile(struct Tool *tool, STRPTR fileName);
+BOOL IsDefIconsRunning(VOID);
+STRPTR GetDefIconsTypeIdentifier(STRPTR fileName, BPTR fileLock);
+STRPTR GetDefIconsDefaultTool(STRPTR typeIdentifier);
 
-static const char *verstag = "$VER: DataType 47.1 (21.12.2025)\n";
+static const char *verstag = "$VER: DataType 47.1 (2/1/2026)\n";
 static const char *stack_cookie = "$STACK: 4096\n";
 
 /* Main entry point */
@@ -195,6 +201,10 @@ BOOL InitializeLibraries(VOID)
         return FALSE;
     }
     
+    /* Open icon.library for DefIcons integration (optional) */
+    IconBase = OpenLibrary("icon.library", 47L);
+    /* Note: icon.library is optional - we continue even if it fails */
+    
     IFFParseBase = OpenLibrary("iffparse.library", 39L);
     if (!IFFParseBase) {
         SetIoErr(ERROR_OBJECT_NOT_FOUND);
@@ -221,6 +231,11 @@ VOID Cleanup(VOID)
     if (DataTypesBase) {
         CloseLibrary(DataTypesBase);
         DataTypesBase = NULL;
+    }
+    
+    if (IconBase) {
+        CloseLibrary(IconBase);
+        IconBase = NULL;
     }
     
     if (UtilityBase) {
@@ -337,6 +352,9 @@ VOID PrintDataTypeInfo(struct DataType *dtn, STRPTR fileName)
     STRPTR groupName = NULL;
     Object *dtObject = NULL;
     BPTR fileLock = NULL;
+    STRPTR defIconsType = NULL;
+    STRPTR defIconsTool = NULL;
+    BPTR parentLock = NULL;
     
     if (!dtn || !dtn->dtn_Header) {
         Printf("Error: Invalid datatype structure\n");
@@ -362,6 +380,49 @@ VOID PrintDataTypeInfo(struct DataType *dtn, STRPTR fileName)
         /* Add descriptive name if available and different from basename */
         if (dth->dth_Name && strcmp(dth->dth_Name, baseName) != 0) {
             Printf(" (%s)", dth->dth_Name);
+        }
+    }
+    
+    /* Try to get DefIcons type identifier if DefIcons is running */
+    if (fileName && IconBase && IsDefIconsRunning()) {
+        fileLock = Lock(fileName, ACCESS_READ);
+        if (fileLock) {
+            STRPTR filePartPtr;
+            UBYTE fileNameCopy[256];
+            STRPTR fileNamePart = NULL;
+            
+            /* Get just the filename part */
+            filePartPtr = FilePart(fileName);
+            
+            /* Make a copy of the filename part to ensure it's valid */
+            /* FilePart returns a pointer into the original string, which may become invalid */
+            if (filePartPtr != NULL && *filePartPtr != '\0') {
+                /* Use full buffer size - Strncpy will handle truncation and null-termination */
+                Strncpy(fileNameCopy, filePartPtr, sizeof(fileNameCopy));
+                fileNamePart = fileNameCopy;
+            } else {
+                /* Fallback: use the original fileName if FilePart fails */
+                fileNamePart = fileName;
+            }
+            
+            parentLock = ParentDir(fileLock);
+            if (parentLock) {
+                defIconsType = GetDefIconsTypeIdentifier(fileNamePart, parentLock);
+                if (defIconsType && *defIconsType) {
+                    /* Get DefIcons default tool */
+                    defIconsTool = GetDefIconsDefaultTool(defIconsType);
+                    if (defIconsTool && *defIconsTool) {
+                        Printf(" [DefIcons: %s, Default: %s]", defIconsType, defIconsTool);
+                        /* Free allocated memory */
+                        FreeVec(defIconsTool);
+                        defIconsTool = NULL;
+                    } else {
+                        Printf(" [DefIcons: %s]", defIconsType);
+                    }
+                }
+                UnLock(parentLock);
+            }
+            UnLock(fileLock);
         }
     }
     
@@ -521,6 +582,10 @@ STRPTR GetLaunchTypeName(UWORD flags)
 VOID PrintTools(struct DataType *dtn, STRPTR fileName, BOOL edit, BOOL browse, BOOL info, BOOL print, BOOL mail)
 {
     struct ToolNode *tn = NULL;
+    STRPTR defIconsType = NULL;
+    STRPTR defIconsTool = NULL;
+    BPTR fileLock = NULL;
+    BPTR parentLock = NULL;
     
     if (!dtn) {
         return;
@@ -564,6 +629,46 @@ VOID PrintTools(struct DataType *dtn, STRPTR fileName, BOOL edit, BOOL browse, B
         Printf("  %s: %s\n", 
                GetToolModeName(tn->tn_Tool.tn_Which),
                tn->tn_Tool.tn_Program);
+    }
+    
+    /* Show DefIcons default tool if available */
+    if (fileName && IconBase && IsDefIconsRunning()) {
+        fileLock = Lock(fileName, ACCESS_READ);
+        if (fileLock) {
+            STRPTR filePartPtr;
+            UBYTE fileNameCopy[256];
+            STRPTR fileNamePart = NULL;
+            
+            /* Get just the filename part */
+            filePartPtr = FilePart(fileName);
+            
+            /* Make a copy of the filename part to ensure it's valid */
+            /* FilePart returns a pointer into the original string, which may become invalid */
+            if (filePartPtr != NULL && *filePartPtr != '\0') {
+                /* Use full buffer size - Strncpy will handle truncation and null-termination */
+                Strncpy(fileNameCopy, filePartPtr, sizeof(fileNameCopy));
+                fileNamePart = fileNameCopy;
+            } else {
+                /* Fallback: use the original fileName if FilePart fails */
+                fileNamePart = fileName;
+            }
+            
+            parentLock = ParentDir(fileLock);
+            if (parentLock) {
+                defIconsType = GetDefIconsTypeIdentifier(fileNamePart, parentLock);
+                if (defIconsType && *defIconsType) {
+                    defIconsTool = GetDefIconsDefaultTool(defIconsType);
+                    if (defIconsTool && *defIconsTool) {
+                        Printf("  DEFAULT (DefIcons): %s\n", defIconsTool);
+                        /* Free allocated memory */
+                        FreeVec(defIconsTool);
+                        defIconsTool = NULL;
+                    }
+                }
+                UnLock(parentLock);
+            }
+            UnLock(fileLock);
+        }
     }
 }
 
@@ -889,5 +994,142 @@ BOOL ParseToolFromDTYP(STRPTR dtypPath, UWORD toolType, struct Tool *toolOut)
     Close(fileHandle);
     
     return result;
+}
+
+/* Check if DefIcons is running by looking for its message port */
+BOOL IsDefIconsRunning(VOID)
+{
+    struct MsgPort *port;
+    
+    if (!SysBase) {
+        return FALSE;
+    }
+    
+    /* Look for the DEFICONS message port */
+    port = FindPort("DEFICONS");
+    
+    if (port != NULL) {
+        return TRUE;
+    }
+    return FALSE;
+}
+
+/* Get file type identifier using icon.library identification (DefIcons) */
+STRPTR GetDefIconsTypeIdentifier(STRPTR fileName, BPTR fileLock)
+{
+    static UBYTE typeBuffer[256];
+    struct TagItem tags[4];
+    LONG errorCode = 0;
+    struct DiskObject *icon = NULL;
+    BPTR oldDir = NULL;
+    
+    if (!IconBase || !fileName) {
+        return NULL;
+    }
+    
+    /* Initialize buffer */
+    typeBuffer[0] = '\0';
+    
+    /* Change to file's directory for identification */
+    if (fileLock != NULL) {
+        oldDir = CurrentDir(fileLock);
+    }
+    
+    /* Set up tags for identification only */
+    tags[0].ti_Tag = ICONGETA_IdentifyBuffer;
+    tags[0].ti_Data = (ULONG)typeBuffer;
+    tags[1].ti_Tag = ICONGETA_IdentifyOnly;
+    tags[1].ti_Data = TRUE;
+    tags[2].ti_Tag = ICONA_ErrorCode;
+    tags[2].ti_Data = (ULONG)&errorCode;
+    tags[3].ti_Tag = TAG_DONE;
+    
+    /* Get file type identifier */
+    /* Note: With ICONGETA_IdentifyOnly, GetIconTagList returns NULL */
+    /* but the type identifier is placed in the buffer */
+    icon = GetIconTagList(fileName, tags);
+    
+    /* If icon was returned (shouldn't happen with IdentifyOnly), free it */
+    if (icon) {
+        FreeDiskObject(icon);
+    }
+    
+    /* Restore original directory */
+    if (oldDir != NULL) {
+        CurrentDir(oldDir);
+    }
+    
+    /* Return the type identifier, or NULL if identification failed */
+    /* Check both errorCode and that buffer has content */
+    if (errorCode == 0 && typeBuffer[0] != '\0') {
+        return typeBuffer;
+    }
+    
+    return NULL;
+}
+
+/* Get default tool from file type identifier (DefIcons) */
+/* Returns the default tool, or NULL if not found */
+STRPTR GetDefIconsDefaultTool(STRPTR typeIdentifier)
+{
+    struct DiskObject *defaultIcon = NULL;
+    STRPTR defaultTool = NULL;
+    UBYTE defIconName[64];
+    BPTR oldDir = NULL;
+    BPTR envDir = NULL;
+    
+    if (!IconBase || !typeIdentifier || *typeIdentifier == '\0') {
+        return NULL;
+    }
+    
+    /* Construct default icon name: def_XXX using SNPrintf */
+    SNPrintf(defIconName, sizeof(defIconName), "def_%s", typeIdentifier);
+    
+    /* Get the default icon from ENVARC:Sys/ or ENV:Sys/ */
+    
+    /* Try ENV:Sys first */
+    if ((envDir = Lock("ENV:Sys", SHARED_LOCK)) != NULL) {
+        oldDir = CurrentDir(envDir);
+        defaultIcon = GetDiskObject(defIconName);
+        CurrentDir(oldDir);
+        UnLock(envDir);
+    }
+    
+    /* If not found, try ENVARC:Sys */
+    if (!defaultIcon && (envDir = Lock("ENVARC:Sys", SHARED_LOCK)) != NULL) {
+        oldDir = CurrentDir(envDir);
+        defaultIcon = GetDiskObject(defIconName);
+        CurrentDir(oldDir);
+        UnLock(envDir);
+    }
+    
+    if (defaultIcon) {
+        /* Extract default tool from the icon */
+        /* do_DefaultTool is a STRPTR - check if it's not NULL and not empty */
+        if (defaultIcon->do_DefaultTool != NULL) {
+            /* Check if the string has content (not just a null terminator) */
+            if (defaultIcon->do_DefaultTool[0] != '\0') {
+                /* Copy the default tool string before freeing the DiskObject */
+                UBYTE toolBuffer[256];
+                ULONG toolLen;
+                
+                toolLen = strlen(defaultIcon->do_DefaultTool);
+                /* Pass the full buffer size (256) to Strncpy - it will handle truncation and null-termination */
+                Strncpy(toolBuffer, defaultIcon->do_DefaultTool, 256);
+                
+                /* Allocate memory for the tool name to return */
+                /* We need to allocate this because we're freeing the DiskObject */
+                defaultTool = AllocVec(toolLen + 1, MEMF_CLEAR);
+                if (defaultTool) {
+                    Strncpy((UBYTE *)defaultTool, toolBuffer, toolLen + 1);
+                }
+            }
+        }
+        /* Note: If icon was found but has no default tool, defaultTool will be NULL */
+        
+        FreeDiskObject(defaultIcon);
+    }
+    
+    return defaultTool;
 }
 
