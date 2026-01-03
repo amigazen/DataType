@@ -53,6 +53,12 @@ ULONG LaunchToolA(struct Tool *, STRPTR, struct TagItem *);
 #define TOOLA_Which      (TOOLA_Dummy + 2)
 #define TOOLA_LaunchType (TOOLA_Dummy + 3)
 #endif
+
+/* Macro to test if a datatype method is supported */
+#ifndef IsDTMethodSupported
+#define IsDTMethodSupported( o, id ) \
+    ((BOOL)FindMethod(GetDTMethods( (o) ), (id) ))
+#endif
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include <proto/intuition.h>
@@ -86,10 +92,15 @@ extern struct Library *IFFParseBase;
 BOOL InitializeLibraries(VOID);
 VOID Cleanup(VOID);
 VOID ShowUsage(VOID);
-LONG QueryDataType(STRPTR fileName, BOOL edit, BOOL browse, BOOL info, BOOL print, BOOL mail);
+LONG QueryDataType(STRPTR fileName, STRPTR outputFile, BOOL edit, BOOL browse, BOOL info, BOOL print, BOOL mail, BOOL convert, BOOL force);
+ULONG ListAvailableFormats(struct DataType *sourceDtn, ULONG groupID);
+struct DataType *SelectFormatFromList(ULONG groupID, LONG *selectedIndex);
+BOOL ConvertToFormat(STRPTR inputFile, struct DataType *destDtn, STRPTR outputFile);
+BOOL CheckOutputFileExists(STRPTR outputFile, BOOL force);
 VOID PrintDataTypeInfo(struct DataType *dtn, STRPTR fileName);
 VOID PrintDatatypeMetadata(Object *dtObject, ULONG groupID);
 VOID PrintTools(struct DataType *dtn, STRPTR fileName, BOOL edit, BOOL browse, BOOL info, BOOL print, BOOL mail);
+VOID PrintWriteCapabilities(Object *dtObject);
 STRPTR GetToolModeName(UWORD toolWhich);
 STRPTR GetLaunchTypeName(UWORD flags);
 struct ToolNode *FindToolByType(struct DataType *dtn, UWORD toolType);
@@ -100,8 +111,9 @@ VOID LaunchToolForFile(struct Tool *tool, STRPTR fileName);
 BOOL IsDefIconsRunning(VOID);
 STRPTR GetDefIconsTypeIdentifier(STRPTR fileName, BPTR fileLock);
 STRPTR GetDefIconsDefaultTool(STRPTR typeIdentifier);
+BOOL ConvertToIFF(STRPTR inputFile, STRPTR outputFile);
 
-static const char *verstag = "$VER: DataType 47.1 (2/1/2026)\n";
+static const char *verstag = "$VER: DataType 47.2 (2/1/2026)\n";
 static const char *stack_cookie = "$STACK: 4096\n";
 
 /* Main entry point */
@@ -117,13 +129,16 @@ int main(int argc, char *argv[])
     BOOL mail = FALSE;
     
     /* Command template */
-    static const char *template = "FILE/A,EDIT/S,VIEW/S,INFO/S,PRINT/S,MAIL/S";
-    LONG args[6];
+    static const char *template = "FILE/A,TARGET/K,CONVERT/S,EDIT/S,VIEW=BROWSE/S,INFO/S,PRINT/S,MAIL/S,FORCE/S";
+    LONG args[9];
+    STRPTR outputFile = NULL;
+    BOOL convert = FALSE;
+    BOOL force = FALSE;
     
     /* Initialize args array */
     {
         LONG i;
-        for (i = 0; i < 6; i++) {
+        for (i = 0; i < 9; i++) {
             args[i] = 0;
         }
     }
@@ -142,11 +157,15 @@ int main(int argc, char *argv[])
     
     /* Extract arguments */
     fileName = (STRPTR)args[0];
-    edit = (BOOL)(args[1] != 0);
-    browse = (BOOL)(args[2] != 0);
-    info = (BOOL)(args[3] != 0);
-    print = (BOOL)(args[4] != 0);
-    mail = (BOOL)(args[5] != 0);
+    outputFile = (STRPTR)args[1];
+    convert = (BOOL)(args[2] != 0);
+    edit = (BOOL)(args[3] != 0);
+    browse = (BOOL)(args[4] != 0);
+    info = (BOOL)(args[5] != 0);
+    print = (BOOL)(args[6] != 0);
+    mail = (BOOL)(args[7] != 0);
+    force = (BOOL)(args[8] != 0);
+
     
     /* Initialize libraries */
     if (!InitializeLibraries()) {
@@ -156,9 +175,9 @@ int main(int argc, char *argv[])
         return RETURN_FAIL;
     }
     
-    /* Query datatype and optionally launch tool */
+    /* Query datatype and optionally launch tool or convert */
     if (fileName) {
-        result = QueryDataType(fileName, edit, browse, info, print, mail);
+        result = QueryDataType(fileName, outputFile, edit, browse, info, print, mail, convert, force);
     } else {
         ShowUsage();
         result = RETURN_FAIL;
@@ -252,15 +271,18 @@ VOID Cleanup(VOID)
 /* Show usage information */
 VOID ShowUsage(VOID)
 {
-    Printf("Usage: DataType FILE=<filename> [EDIT] [BROWSE] [INFO] [PRINT] [MAIL]\n");
+    Printf("Usage: DataType FILE=<filename> [OUTPUT=<outfile>] [CONVERT] [FORCE] [EDIT] [BROWSE] [INFO] [PRINT] [MAIL]\n");
     Printf("\n");
     Printf("Options:\n");
     Printf("  FILE=<filename>  - File to query datatype for (required)\n");
+    Printf("  OUTPUT=<file>    - Output file for conversion (assumes IFF if CONVERT not specified)\n");
+    Printf("  CONVERT          - List available formats and prompt for selection\n");
     Printf("  EDIT             - Launch EDIT tool for the file\n");
-    Printf("  BROWSE            - Launch BROWSE tool for the file\n");
+    Printf("  VIEW=BROWSE      - Launch VIEW tool for the file\n");
     Printf("  INFO             - Launch INFO tool for the file\n");
     Printf("  PRINT            - Launch PRINT tool for the file\n");
     Printf("  MAIL             - Launch MAIL tool for the file\n");
+    Printf("  FORCE            - Overwrite existing output file\n");
     Printf("\n");
     Printf("If no tool switch is specified, displays datatype information and\n");
     Printf("available tools without launching anything.\n");
@@ -269,10 +291,12 @@ VOID ShowUsage(VOID)
     Printf("  DataType FILE=test.txt          - Show datatype info for test.txt\n");
     Printf("  DataType FILE=image.ilbm EDIT   - Launch editor for image.ilbm\n");
     Printf("  DataType FILE=document.ftxt BROWSE - Launch browser for document.ftxt\n");
+    Printf("  DataType FILE=pic.jpg OUTPUT=pic.ilbm - Convert pic.jpg to IFF format\n");
+    Printf("  DataType FILE=pic.jpg CONVERT   - List formats and convert pic.jpg\n");
 }
 
-/* Query datatype for a file and optionally launch a tool */
-LONG QueryDataType(STRPTR fileName, BOOL edit, BOOL browse, BOOL info, BOOL print, BOOL mail)
+/* Query datatype for a file and optionally launch a tool or convert */
+LONG QueryDataType(STRPTR fileName, STRPTR outputFile, BOOL edit, BOOL browse, BOOL info, BOOL print, BOOL mail, BOOL convert, BOOL force)
 {
     BPTR lock = NULL;
     struct DataType *dtn = NULL;
@@ -299,6 +323,151 @@ LONG QueryDataType(STRPTR fileName, BOOL edit, BOOL browse, BOOL info, BOOL prin
     /* Display datatype information */
     PrintDataTypeInfo(dtn, fileName);
     
+    /* Check if conversion was requested */
+    /* If OUTPUT is specified without CONVERT, assume IFF conversion */
+    if (convert || (outputFile && !convert)) {
+        ULONG groupID = dtn->dtn_Header->dth_GroupID;
+        struct DataType *destDtn = NULL;
+        STRPTR finalOutputFile = outputFile;
+        BOOL doIFFConversion = FALSE;
+        
+        /* Determine conversion mode */
+        if (outputFile && !convert) {
+            /* OUTPUT without CONVERT - do IFF conversion */
+            doIFFConversion = TRUE;
+        }
+        
+        /* If IFF conversion is requested, skip straight to IFF conversion */
+        if (doIFFConversion) {
+            if (!finalOutputFile) {
+                Printf("\nError: OUTPUT file must be specified for IFF conversion\n");
+                ReleaseDataType(dtn);
+                UnLock(lock);
+                return RETURN_FAIL;
+            }
+            
+            /* Check if output file exists and FORCE is not specified */
+            if (!CheckOutputFileExists(finalOutputFile, force)) {
+                ReleaseDataType(dtn);
+                UnLock(lock);
+                return RETURN_FAIL;
+            }
+            
+            /* Convert to IFF format */
+            if (ConvertToIFF(fileName, finalOutputFile)) {
+                Printf("\nSuccessfully converted %s to IFF format: %s\n", fileName, finalOutputFile);
+                result = RETURN_OK;
+            } else {
+                LONG errorCode = IoErr();
+                Printf("\nError: Failed to convert to IFF format\n");
+                if (errorCode != 0) {
+                    PrintFault(errorCode, "DataType");
+                }
+                result = RETURN_FAIL;
+            }
+            
+            /* Cleanup and return */
+            ReleaseDataType(dtn);
+            UnLock(lock);
+            return result;
+        }
+        
+        /* CONVERT specified - list available formats and prompt user */
+        if (convert) {
+            ULONG formatCount = 0;
+            
+            /* List available formats in the same group and get count */
+            formatCount = ListAvailableFormats(dtn, groupID);
+            
+            /* If no formats available, don't prompt - just exit */
+            if (formatCount == 0) {
+                Printf("\nNo formats available for conversion\n");
+                ReleaseDataType(dtn);
+                UnLock(lock);
+                return RETURN_FAIL;
+            }
+            
+            /* Prompt user to select a format */
+            destDtn = SelectFormatFromList(groupID, NULL);
+            
+            if (!destDtn) {
+                Printf("\nConversion cancelled or no format selected\n");
+                ReleaseDataType(dtn);
+                UnLock(lock);
+                return RETURN_FAIL;
+            }
+            
+            /* Get output filename if not specified */
+            if (!finalOutputFile) {
+                /* Prompt for output filename or derive from input */
+                UBYTE outputBuffer[256];
+                STRPTR filePart = NULL;
+                STRPTR baseName = destDtn->dtn_Header->dth_BaseName;
+                
+                filePart = FilePart(fileName);
+                if (filePart) {
+                    /* Copy filename part and replace extension */
+                    LONG nameLen = strlen(filePart);
+                    LONG extPos = -1;
+                    LONG i;
+                    
+                    /* Find last dot in filename */
+                    for (i = nameLen - 1; i >= 0; i--) {
+                        if (filePart[i] == '.') {
+                            extPos = i;
+                            break;
+                        }
+                    }
+                    
+                    if (extPos >= 0) {
+                        /* Copy up to extension, then add new extension */
+                        Strncpy(outputBuffer, filePart, extPos);
+                        outputBuffer[extPos] = '\0';
+                        SNPrintf(outputBuffer + extPos, sizeof(outputBuffer) - extPos, ".%s", baseName);
+                    } else {
+                        /* No extension, just add new one */
+                        Strncpy(outputBuffer, filePart, sizeof(outputBuffer));
+                        SNPrintf(outputBuffer + strlen(outputBuffer), sizeof(outputBuffer) - strlen(outputBuffer), ".%s", baseName);
+                    }
+                    finalOutputFile = (STRPTR)outputBuffer;
+                } else {
+                    Printf("\nError: Could not determine output filename\n");
+                    ReleaseDataType(destDtn);
+                    ReleaseDataType(dtn);
+                    UnLock(lock);
+                    return RETURN_FAIL;
+                }
+            }
+            
+            /* Check if output file exists and FORCE is not specified */
+            if (!CheckOutputFileExists(finalOutputFile, force)) {
+                ReleaseDataType(destDtn);
+                ReleaseDataType(dtn);
+                UnLock(lock);
+                return RETURN_FAIL;
+            }
+            
+            /* Perform conversion */
+            if (ConvertToFormat(fileName, destDtn, finalOutputFile)) {
+                Printf("\nSuccessfully converted %s to %s format: %s\n", 
+                       fileName, destDtn->dtn_Header->dth_Name, finalOutputFile);
+                result = RETURN_OK;
+            } else {
+                LONG errorCode = IoErr();
+                Printf("\nError: Failed to convert file\n");
+                if (errorCode != 0) {
+                    PrintFault(errorCode, "DataType");
+                }
+                result = RETURN_FAIL;
+            }
+            
+            ReleaseDataType(destDtn);
+            ReleaseDataType(dtn);
+            UnLock(lock);
+            return result;
+        }
+    }
+    
     /* Check if any tool launch was requested */
     if (edit || browse || info || print || mail) {
         /* Launch requested tool */
@@ -320,15 +489,22 @@ LONG QueryDataType(STRPTR fileName, BOOL edit, BOOL browse, BOOL info, BOOL prin
         if (toolType > 0) {
             tn = FindToolByType(dtn, toolType);
             if (tn) {
+                STRPTR preferredToolName = edit ? (STRPTR)"EDIT" : 
+                                           browse ? (STRPTR)"BROWSE" : 
+                                           info ? (STRPTR)"INFO" : 
+                                           print ? (STRPTR)"PRINT" : (STRPTR)"MAIL";
+                STRPTR actualToolName = GetToolModeName(tn->tn_Tool.tn_Which);
+                
+                /* Check if we're using a fallback tool (different from requested) */
+                if (tn->tn_Tool.tn_Which != toolType) {
+                    Printf("\nNote: %s tool not available, using %s tool instead\n", 
+                           preferredToolName, actualToolName);
+                }
                 Printf("\nLaunching tool: %s\n", tn->tn_Tool.tn_Program ? tn->tn_Tool.tn_Program : (STRPTR)"(NULL)");
                 LaunchToolForFile(&tn->tn_Tool, fileName);
                 result = RETURN_OK;
             } else {
-                Printf("\nError: No %s tool available for this datatype\n", 
-                       edit ? (STRPTR)"EDIT" : 
-                       browse ? (STRPTR)"BROWSE" : 
-                       info ? (STRPTR)"INFO" : 
-                       print ? (STRPTR)"PRINT" : (STRPTR)"MAIL");
+                Printf("\nError: No tools available for this datatype\n");
                 result = RETURN_FAIL;
             }
         }
@@ -426,13 +602,14 @@ VOID PrintDataTypeInfo(struct DataType *dtn, STRPTR fileName)
         }
     }
     
-    /* Try to create a datatype object to query metadata */
+    /* Try to create a datatype object to query metadata and write capabilities */
     if (fileName) {
         fileLock = Lock(fileName, ACCESS_READ);
         if (fileLock) {
             dtObject = NewDTObject((APTR)fileLock, TAG_DONE);
             if (dtObject) {
                 PrintDatatypeMetadata(dtObject, dth->dth_GroupID);
+                PrintWriteCapabilities(dtObject);
                 DisposeDTObject(dtObject);
             }
             UnLock(fileLock);
@@ -672,7 +849,7 @@ VOID PrintTools(struct DataType *dtn, STRPTR fileName, BOOL edit, BOOL browse, B
     }
 }
 
-/* Find a tool node by type */
+/* Find a tool node by type, or fall back to any available tool */
 struct ToolNode *FindToolByType(struct DataType *dtn, UWORD toolType)
 {
     struct ToolNode *tn = NULL;
@@ -680,6 +857,7 @@ struct ToolNode *FindToolByType(struct DataType *dtn, UWORD toolType)
     struct TagItem tags[2];
     struct Tool fallbackTool;
     BOOL fallbackSuccess = FALSE;
+    struct Node *node = NULL;
     
     if (!dtn) {
         return NULL;
@@ -687,7 +865,7 @@ struct ToolNode *FindToolByType(struct DataType *dtn, UWORD toolType)
     
     toolList = &dtn->dtn_ToolList;
     
-    /* First try FindToolNodeA API */
+    /* First try FindToolNodeA API for the preferred tool type */
     if (!IsListEmpty(toolList)) {
         tags[0].ti_Tag = TOOLA_Which;
         tags[0].ti_Data = (ULONG)toolType;
@@ -708,6 +886,20 @@ struct ToolNode *FindToolByType(struct DataType *dtn, UWORD toolType)
             staticToolNode.tn_Node.ln_Pred = NULL;
             staticToolNode.tn_Length = sizeof(struct ToolNode);
             tn = &staticToolNode;
+        }
+    }
+    
+    /* If preferred tool type not found, fall back to any available tool */
+    if (!tn && !IsListEmpty(toolList)) {
+        /* Iterate through tool list and return first available tool */
+        for (node = toolList->lh_Head; node->ln_Succ; node = node->ln_Succ) {
+            tn = (struct ToolNode *)node;
+            /* Check if this tool node has a valid program */
+            if (tn->tn_Tool.tn_Program && tn->tn_Tool.tn_Program[0] != '\0') {
+                /* Found an available tool - use it */
+                break;
+            }
+            tn = NULL;
         }
     }
     
@@ -1131,5 +1323,392 @@ STRPTR GetDefIconsDefaultTool(STRPTR typeIdentifier)
     }
     
     return defaultTool;
+}
+
+/* Convert file to IFF format using datatypes.library */
+BOOL ConvertToIFF(STRPTR inputFile, STRPTR outputFile)
+{
+    Object *dtObject = NULL;
+    LONG errorCode = 0;
+    BOOL result = FALSE;
+    STRPTR errorString = NULL;
+    
+    if (!inputFile || !outputFile) {
+        SetIoErr(ERROR_REQUIRED_ARG_MISSING);
+        return FALSE;
+    }
+    
+    /* Create datatype object from input file */
+    dtObject = NewDTObjectA((APTR)inputFile, TAG_DONE);
+    if (!dtObject) {
+        errorCode = IoErr();
+        if (errorCode == 0) {
+            errorCode = ERROR_OBJECT_NOT_FOUND;
+        }
+        SetIoErr(errorCode);
+        return FALSE;
+    }
+    
+    /* Clear selection before writing */
+    {
+        struct dtGeneral clearMsg;
+        clearMsg.MethodID = DTM_CLEARSELECTED;
+        clearMsg.dtg_GInfo = NULL;
+        DoDTMethodA(dtObject, NULL, NULL, (Msg)&clearMsg);
+    }
+    
+    /* Save the datatype object to file in IFF format using SaveDTObjectA */
+    /* SaveDTObjectA opens the file, calls DTM_WRITE, closes the file */
+    /* Returns the value returned by DTM_WRITE or NULL for error */
+    SetIoErr(0);
+    result = SaveDTObjectA(dtObject, NULL, NULL, outputFile, DTWM_IFF, FALSE, TAG_DONE);
+    if (!result) {
+        /* Failure - get error code and error string */
+        errorCode = IoErr();
+        if (errorCode != 0) {
+            errorString = GetDTString(errorCode);
+            if (errorString && *errorString != '\0') {
+                /* Error string is available - it will be printed by caller */
+                SetIoErr(errorCode);
+            } else {
+                /* No error string, use the error code */
+                SetIoErr(errorCode);
+            }
+        } else {
+            /* No error code set, use generic error */
+            SetIoErr(ERROR_WRITE_PROTECTED);
+        }
+        result = FALSE;
+    } else {
+        /* Success */
+        result = TRUE;
+    }
+    
+    /* Cleanup */
+    if (dtObject) {
+        DisposeDTObject(dtObject);
+    }
+    
+    return result;
+}
+
+/* Print write capabilities of a datatype object */
+VOID PrintWriteCapabilities(Object *dtObject)
+{
+    BOOL supportsWrite = FALSE;
+    BOOL supportsIFF = FALSE;
+    BOOL supportsRAW = FALSE;
+    
+    if (!dtObject) {
+        return;
+    }
+    
+    /* Check if DTM_WRITE method is supported using FindMethod */
+    if (IsDTMethodSupported(dtObject, DTM_WRITE)) {
+        supportsWrite = TRUE;
+    }
+    
+    if (!supportsWrite) {
+        /* Datatype doesn't support writing at all */
+        return;
+    }
+    
+    /* Test which write modes are supported by attempting writes to a temporary file */
+    {
+        UBYTE tempFileName[64];
+        ULONG uniqueID;
+        
+        /* Generate unique temporary filename */
+        uniqueID = GetUniqueID();
+        SNPrintf(tempFileName, sizeof(tempFileName), "T:dtwrite%08lX", uniqueID);
+        
+        /* Clear selection before testing */
+        {
+            struct dtGeneral clearMsg;
+            clearMsg.MethodID = DTM_CLEARSELECTED;
+            clearMsg.dtg_GInfo = NULL;
+            DoDTMethodA(dtObject, NULL, NULL, (Msg)&clearMsg);
+        }
+        
+        /* Test DTWM_IFF mode using SaveDTObjectA */
+        SetIoErr(0);
+        if (SaveDTObjectA(dtObject, NULL, NULL, (STRPTR)tempFileName, DTWM_IFF, FALSE, TAG_DONE)) {
+            supportsIFF = TRUE;
+        }
+        /* SaveDTObjectA deletes the file if DTM_WRITE returns 0, so no need to delete manually */
+        
+        /* Test DTWM_RAW mode */
+        SNPrintf(tempFileName, sizeof(tempFileName), "T:dtwrite%08lX", uniqueID);
+        SetIoErr(0);
+        if (SaveDTObjectA(dtObject, NULL, NULL, (STRPTR)tempFileName, DTWM_RAW, FALSE, TAG_DONE)) {
+            supportsRAW = TRUE;
+        }
+        /* SaveDTObjectA deletes the file if DTM_WRITE returns 0, so no need to delete manually */
+    }
+    
+    /* Print write capabilities */
+    if (supportsIFF || supportsRAW) {
+        Printf(", Write: ");
+        if (supportsIFF && supportsRAW) {
+            Printf("IFF, Native");
+        } else if (supportsIFF) {
+            Printf("IFF");
+        } else if (supportsRAW) {
+            Printf("Native");
+        }
+    }
+}
+
+/* List available formats for conversion in the same group */
+/* Returns the count of available formats */
+ULONG ListAvailableFormats(struct DataType *sourceDtn, ULONG groupID)
+{
+    struct DataType *dtn = NULL;
+    struct DataType *prevdtn = NULL;
+    ULONG count = 0;
+    STRPTR sourceBaseName = NULL;
+    
+    if (!sourceDtn) {
+        return 0;
+    }
+    
+    sourceBaseName = sourceDtn->dtn_Header->dth_BaseName;
+    
+    Printf("\nAvailable formats for conversion:\n");
+    Printf("===================================\n");
+    
+    /* Enumerate all datatypes in the same group */
+    {
+        struct TagItem tags[4];
+        tags[0].ti_Tag = DTA_DataType;
+        tags[0].ti_Data = (ULONG)prevdtn;
+        tags[1].ti_Tag = DTA_GroupID;
+        tags[1].ti_Data = (ULONG)groupID;
+        tags[2].ti_Tag = TAG_DONE;
+        
+        while ((dtn = ObtainDataTypeA(DTST_RAM, NULL, tags)) != NULL) {
+        /* Skip system datatypes and invalid ones */
+        if (dtn->dtn_Header->dth_GroupID == GID_SYSTEM || 
+            dtn->dtn_Header->dth_GroupID == 0) {
+            ReleaseDataType(prevdtn);
+            prevdtn = dtn;
+            continue;
+        }
+        
+        count++;
+        
+        /* Print format info */
+        {
+            STRPTR name = dtn->dtn_Header->dth_Name ? dtn->dtn_Header->dth_Name : (STRPTR)"Unknown";
+            STRPTR baseName = dtn->dtn_Header->dth_BaseName ? dtn->dtn_Header->dth_BaseName : (STRPTR)"unknown";
+            BOOL isCurrent = (sourceBaseName && Stricmp(sourceBaseName, baseName) == 0);
+            
+            Printf("  %2lu. %s (%s)", count, name, baseName);
+            if (isCurrent) {
+                Printf(" [current]");
+            }
+            Printf("\n");
+        }
+        
+            /* Release previous and keep current */
+            if (prevdtn) {
+                ReleaseDataType(prevdtn);
+            }
+            prevdtn = dtn;
+            
+            /* Update tags for next iteration */
+            tags[0].ti_Data = (ULONG)prevdtn;
+        }
+    }
+    
+    /* Release last datatype */
+    if (prevdtn) {
+        ReleaseDataType(prevdtn);
+    }
+    
+    return count;
+}
+
+/* Select format from list by prompting user */
+struct DataType *SelectFormatFromList(ULONG groupID, LONG *selectedIndex)
+{
+    struct DataType *dtn = NULL;
+    struct DataType *prevdtn = NULL;
+    struct DataType *resultDtn = NULL;
+    ULONG count = 0;
+    LONG selection = 0;
+    UBYTE inputBuffer[32];
+    LONG inputLen = 0;
+    LONG charsConverted = 0;
+    
+    Printf("\nSelect format number (or 0 to cancel): ");
+    
+    /* Read user input */
+    inputLen = Read(Input(), inputBuffer, sizeof(inputBuffer) - 1);
+    if (inputLen > 0) {
+        inputBuffer[inputLen] = '\0';
+        /* Remove newline if present */
+        if (inputBuffer[inputLen - 1] == '\n') {
+            inputBuffer[inputLen - 1] = '\0';
+            inputLen--;
+        }
+        /* Convert string to long using StrToLong */
+        charsConverted = StrToLong((STRPTR)inputBuffer, &selection);
+        if (charsConverted < 0) {
+            /* No digits found - treat as 0 (cancel) */
+            selection = 0;
+        }
+    }
+    
+    if (selection <= 0) {
+        return NULL;
+    }
+    
+    /* Find the selected datatype */
+    {
+        struct TagItem tags[4];
+        tags[0].ti_Tag = DTA_DataType;
+        tags[0].ti_Data = (ULONG)prevdtn;
+        tags[1].ti_Tag = DTA_GroupID;
+        tags[1].ti_Data = (ULONG)groupID;
+        tags[2].ti_Tag = TAG_DONE;
+        
+        while ((dtn = ObtainDataTypeA(DTST_RAM, NULL, tags)) != NULL) {
+        count++;
+        
+        /* Skip system datatypes and invalid ones */
+        if (dtn->dtn_Header->dth_GroupID == GID_SYSTEM || 
+            dtn->dtn_Header->dth_GroupID == 0) {
+            ReleaseDataType(prevdtn);
+            prevdtn = dtn;
+            continue;
+        }
+        
+        if (count == selection) {
+            /* Found the selected format - keep it and release others */
+            resultDtn = dtn;
+            if (selectedIndex) {
+                *selectedIndex = selection;
+            }
+            /* Release previous but keep current */
+            if (prevdtn) {
+                ReleaseDataType(prevdtn);
+            }
+            prevdtn = NULL; /* Don't release resultDtn */
+            break;
+        }
+        
+            /* Release previous and keep current */
+            if (prevdtn) {
+                ReleaseDataType(prevdtn);
+            }
+            prevdtn = dtn;
+            
+            /* Update tags for next iteration */
+            tags[0].ti_Data = (ULONG)prevdtn;
+        }
+    }
+    
+    /* Release any remaining datatypes */
+    if (prevdtn && prevdtn != resultDtn) {
+        ReleaseDataType(prevdtn);
+    }
+    
+    return resultDtn;
+}
+
+/* Convert file to specified format */
+BOOL ConvertToFormat(STRPTR inputFile, struct DataType *destDtn, STRPTR outputFile)
+{
+    Object *srcObject = NULL;
+    LONG errorCode = 0;
+    BOOL result = FALSE;
+    ULONG groupID = 0;
+    
+    if (!inputFile || !destDtn || !outputFile) {
+        SetIoErr(ERROR_REQUIRED_ARG_MISSING);
+        return FALSE;
+    }
+    
+    groupID = destDtn->dtn_Header->dth_GroupID;
+    
+    /* Create source object from input file */
+    {
+        struct TagItem tags[2];
+        tags[0].ti_Tag = DTA_GroupID;
+        tags[0].ti_Data = (ULONG)groupID;
+        tags[1].ti_Tag = TAG_DONE;
+        
+        srcObject = NewDTObjectA((APTR)inputFile, tags);
+    }
+    if (!srcObject) {
+        errorCode = IoErr();
+        if (errorCode == 0) {
+            errorCode = ERROR_OBJECT_NOT_FOUND;
+        }
+        SetIoErr(errorCode);
+        return FALSE;
+    }
+    
+    /* Use SaveDTObjectA to save in the target format */
+    /* Note: SaveDTObjectA may not support direct format conversion.
+     * For full conversion support, group-specific conversion functions
+     * would be needed (like DTConvert uses).
+     */
+    if (SaveDTObjectA(srcObject, NULL, NULL, outputFile, DTWM_RAW, FALSE, TAG_DONE)) {
+        result = TRUE;
+    } else {
+        errorCode = IoErr();
+        if (errorCode == 0) {
+            errorCode = ERROR_WRITE_PROTECTED;
+        }
+        SetIoErr(errorCode);
+        result = FALSE;
+    }
+    
+    /* Cleanup */
+    if (srcObject) {
+        DisposeDTObject(srcObject);
+    }
+    
+    return result;
+}
+
+/* Check if output file exists and handle FORCE flag */
+BOOL CheckOutputFileExists(STRPTR outputFile, BOOL force)
+{
+    BPTR fileLock = NULL;
+    struct FileInfoBlock *fib = NULL;
+    BOOL exists = FALSE;
+    
+    if (!outputFile) {
+        return TRUE; /* No output file specified, nothing to check */
+    }
+    
+    /* Try to lock the file to see if it exists */
+    fileLock = Lock(outputFile, ACCESS_READ);
+    if (fileLock) {
+        /* File exists - check if it's a file (not a directory) */
+        fib = (struct FileInfoBlock *)AllocVec(sizeof(struct FileInfoBlock), MEMF_CLEAR);
+        if (fib) {
+            if (Examine(fileLock, fib)) {
+                if (fib->fib_DirEntryType == ST_FILE) {
+                    exists = TRUE;
+                }
+            }
+            FreeVec(fib);
+        }
+        UnLock(fileLock);
+    }
+    
+    if (exists && !force) {
+        /* File exists and FORCE not specified - error */
+        Printf("\nError: Output file already exists: %s\n", outputFile);
+        Printf("Use FORCE switch to overwrite existing file\n");
+        SetIoErr(ERROR_OBJECT_EXISTS);
+        return FALSE;
+    }
+    
+    return TRUE;
 }
 
