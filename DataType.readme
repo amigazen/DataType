@@ -1,0 +1,205 @@
+  Short:        Datatype query and file conversion utility
+  Uploader:     toolkit@amigazen.com
+  Author:       amigazen project
+  Type:         util/datatypes
+  Version:      47.2
+  Architecture: m68k-amigaos >= 3.2
+  Distribution: Aminet
+  Kurz:         Datentyp-Abfrage und Dateikonvertierung mit datatypes.library
+
+  DataType is a comprehensive command-line tool for Amiga that queries and
+  displays information about file datatypes using datatypes.library. It can
+  identify file types, show available tools, launch tools for files, and
+  convert files to different formats including IFF.
+
+  Features:
+  - Query datatype information for any file
+  - Display comprehensive metadata (dimensions, colors, frame count, etc.)
+  - Show write capabilities (IFF, Native format support)
+  - List available tools (EDIT, VIEW, INFO, PRINT, MAIL)
+  - Launch tools with automatic fallback to alternative tools
+  - Convert files to IFF format
+  - Interactive format selection for conversion within same group
+  - DefIcons integration (shows type identifier and default tool)
+  - Safe file overwrite protection (requires FORCE switch)
+  - Command-line interface suitable for scripts and automation
+
+  Requirements:
+  - AmigaOS 3.2 or higher
+  - datatypes.library 45 or higher
+  - iffparse.library 39 or higher
+  - utility.library 39 or higher
+  - intuition.library 39 or higher
+  - icon.library 47 or higher (optional, for DefIcons integration)
+
+  Usage:
+
+  Query datatype information:
+    DataType FILE=<filename>
+  
+  Display comprehensive information about a file's datatype, including:
+  - Group and BaseName (e.g., PICTURE/ILBM, TEXT/FTXT)
+  - Descriptive name
+  - Metadata specific to the datatype:
+    * Images: dimensions (width x height), color depth, number of colors
+    * Animations: dimensions, color depth, frame count
+    * Sound: sample length, sample rate, bit depth
+    * Text: character count
+  - Write capabilities (IFF, Native, or both)
+  - Available tools (EDIT, VIEW, INFO, PRINT, MAIL)
+  - DefIcons type identifier and default tool (if DefIcons is running)
+
+  Convert file to IFF format:
+    DataType FILE=<filename> TARGET=<outfile> [FORCE]
+  
+  Convert a file to IFF format using datatypes.library. The conversion uses
+  the DTM_WRITE method with DTWM_IFF mode. If the output file already exists,
+  use FORCE to overwrite it.
+
+  Interactive format conversion:
+    DataType FILE=<filename> CONVERT [TARGET=<outfile>] [FORCE]
+  
+  List all available formats for conversion in the same group as the source
+  file, then prompt you to select a format. The conversion uses the datatype's
+  native format (DTWM_RAW mode). If TARGET is not specified, the output
+  filename is derived from the input filename with the appropriate extension.
+  If no formats are available, DataType exits without prompting.
+
+  Launch tools:
+    DataType FILE=<filename> [EDIT|VIEW|INFO|PRINT|MAIL]
+  
+  Launch the specified tool for the file. DataType supports automatic fallback:
+  if the requested tool type is not available, it will use any available tool
+  and notify you. The tool is launched using LaunchToolA() from datatypes.library.
+
+  Examples:
+  - Query datatype information:
+    DataType FILE=test.txt
+    → Displays: test.txt: TEXT/FTXT (Formatted Text), Write: IFF, Native
+      Available tools: EDIT, VIEW, INFO, PRINT, MAIL
+
+  - Convert image to IFF:
+    DataType FILE=image.jpg TARGET=image.ilbm
+    → Converts image.jpg to IFF format, saving as image.ilbm
+
+  - Convert with overwrite protection:
+    DataType FILE=image.jpg TARGET=image.ilbm FORCE
+    → Converts image.jpg to IFF format, overwriting image.ilbm if it exists
+
+  - Interactive format conversion:
+    DataType FILE=document.ftxt CONVERT
+    → Lists available text formats, prompts for selection, then converts
+
+  - Convert with specific output filename:
+    DataType FILE=document.ftxt CONVERT TARGET=output.txt
+    → Lists formats, prompts for selection, saves as output.txt
+
+  - Launch editor:
+    DataType FILE=image.ilbm EDIT
+    → Launches the editor for image.ilbm (or fallback tool if EDIT unavailable)
+
+  - Launch viewer:
+    DataType FILE=document.ftxt VIEW
+    → Launches the viewer for document.ftxt
+
+  - Launch info tool:
+    DataType FILE=image.jpg INFO
+    → Launches the info tool for image.jpg
+
+  - Launch print tool:
+    DataType FILE=document.ftxt PRINT
+    → Launches the print tool for document.ftxt
+
+  - Launch mail tool:
+    DataType FILE=image.jpg MAIL
+    → Launches the mail tool for image.jpg
+
+  How It Works:
+
+  Datatype Identification:
+  DataType uses ObtainDataTypeA() from datatypes.library to identify file
+  types. It queries the datatype system using DTST_FILE mode with a file lock,
+  which allows datatypes.library to examine the file and determine its type.
+
+  Metadata Display:
+  For different datatype groups, DataType queries specific attributes:
+  - PICTURE: PDTA_BitMapHeader or ADTA attributes for dimensions and colors
+  - ANIMATION: ADTA attributes for dimensions, colors, and frame count
+  - SOUND: SDTA attributes for sample length, sample rate, and bit depth
+  - TEXT: TDTA attributes for character count
+
+  Write Capabilities:
+  DataType tests write capabilities by attempting writes to temporary files
+  using SaveDTObjectA() with both DTWM_IFF and DTWM_RAW modes. This provides
+  accurate information about which write modes the datatype supports.
+
+  Tool Discovery:
+  DataType uses FindToolNodeA() to locate tools in the datatype's tool list.
+  If the API fails, it falls back to parsing DTYP files directly. Tools are
+  searched in DEVS:Datatypes/ directory.
+
+  Tool Fallback:
+  If the requested tool type (EDIT, VIEW, INFO, PRINT, MAIL) is not available,
+  DataType automatically falls back to any available tool from the datatype's
+  tool list. A notification message is displayed when a fallback tool is used.
+
+  File Conversion:
+  IFF Conversion:
+  When TARGET is specified without CONVERT, DataType:
+  1. Creates a datatype object from the input file using NewDTObjectA()
+  2. Clears any selection using DTM_CLEARSELECTED
+  3. Saves the object to the output file using SaveDTObjectA() with DTWM_IFF mode
+  4. SaveDTObjectA() handles file opening, DTM_WRITE call, and file closing
+
+  Format Conversion:
+  When CONVERT is specified, DataType:
+  1. Lists all datatypes in the same group using ObtainDataTypeA()
+  2. Prompts you to select a format
+  3. Creates a datatype object with the target group ID
+  4. Saves the object using SaveDTObjectA() with DTWM_RAW mode
+
+  DefIcons Integration:
+  If DefIcons is running (detected via FindPort("DEFICONS")), DataType:
+  1. Uses icon.library's GetIconTagList() with ICONGETA_IdentifyOnly to get
+     the type identifier
+  2. Looks up the default tool from ENV:Sys/def_<type> or ENVARC:Sys/def_<type>
+  3. Displays both the type identifier and default tool in the output
+
+  File Overwrite Protection:
+  Before converting, DataType checks if the output file exists by attempting
+  to lock it. If the file exists and FORCE is not specified, the conversion
+  is aborted with an error message. This prevents accidental data loss.
+
+  For more information, and to report issues, visit:
+  - GitHub: https://github.com/amigazen/DataType/
+  - Web: http://www.amigazen.com/toolkit/
+
+  This software is Free and Open Source Software distributed on BSD-2 license terms:
+
+  Copyright (c) 2026 amigazen project
+  All rights reserved.
+
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions are met:
+
+  1. Redistributions of source code must retain the above copyright notice,
+     this list of conditions and the following disclaimer.
+
+  2. Redistributions in binary form must reproduce the above copyright notice,
+     this list of conditions and the following disclaimer in the documentation
+     and/or other materials provided with the distribution.
+
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+  ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+  LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+  CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+  SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+  CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+  POSSIBILITY OF SUCH DAMAGE.
+
+  amigazen project philosophy is based on openness:
+  Open to anyone and everyone - Open source and free for all - Open your mind and create!

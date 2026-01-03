@@ -1,0 +1,116 @@
+   NAME
+	DataType - Query datatypes and convert files using datatypes.library
+
+   FORMAT
+	DataType FILE=<filename> [TARGET=<outfile>] [CONVERT] [EDIT] [VIEW] [INFO] [PRINT] [MAIL] [FORCE]
+
+   TEMPLATE
+	FILE/A,TARGET/K,CONVERT/S,EDIT/S,VIEW=BROWSE/S,INFO/S,PRINT/S,MAIL/S,FORCE/S
+
+   PATH
+	SDK:C/DataType
+
+   FUNCTION
+	DataType queries and displays information about file datatypes using
+	datatypes.library. It can identify file types, show available tools,
+	launch tools for files, and convert files to different formats.
+
+	When no tool switch is specified, DataType displays comprehensive
+	information about the file's datatype, including:
+	- Group and BaseName (e.g., PICTURE/ILBM)
+	- Descriptive name
+	- Metadata (dimensions, colors, frame count, etc. for images/animations)
+	- Write capabilities (IFF, Native format)
+	- Available tools (EDIT, VIEW, INFO, PRINT, MAIL)
+	- DefIcons type identifier and default tool (if DefIcons is running)
+
+	DataType supports file conversion in two modes:
+	1. Direct IFF conversion: When TARGET is specified without CONVERT,
+	   the file is converted to IFF format.
+	2. Interactive format selection: When CONVERT is specified, DataType
+	   lists all available formats in the same group and prompts you to
+	   select one for conversion.
+
+	Tool launching supports automatic fallback: if the requested tool type
+	is not available, DataType will use any available tool and notify you.
+
+   OPTIONS
+	FILE=<filename>
+	The file to query datatype information for. This parameter is required.
+	DataType will identify the file's datatype using datatypes.library.
+
+	TARGET=<outfile>
+	Specify an output file for conversion. If TARGET is specified without
+	CONVERT, the file is converted to IFF format. If CONVERT is also
+	specified, TARGET is used as the output filename for the selected format.
+	If TARGET is not specified with CONVERT, the output filename is derived
+	from the input filename with the appropriate extension.
+
+	CONVERT
+	List all available formats for conversion in the same group as the
+	source file, then prompt you to select a format. The conversion uses
+	the datatype's native format (DTWM_RAW mode). If no formats are
+	available, DataType exits without prompting.
+
+	FORCE
+	Overwrite existing output files during conversion. Without this option,
+	DataType will refuse to overwrite an existing file and display an error
+	message.
+
+	EDIT
+	Launch the EDIT tool for the file. If no EDIT tool is available, DataType
+	will fall back to any available tool and notify you.
+
+	VIEW (or BROWSE)
+	Launch the VIEW (BROWSE) tool for the file. If no VIEW tool is available, 
+    DataType will fall back to any available tool and notify you.
+
+	INFO
+	Launch the INFO tool for the file. If no INFO tool is available, DataType
+	will fall back to any available tool and notify you.
+
+	PRINT
+	Launch the PRINT tool for the file. If no PRINT tool is available,
+	DataType will fall back to any available tool and notify you.
+
+	MAIL
+	Launch the MAIL tool for the file. If no MAIL tool is available, DataType
+	will fall back to any available tool and notify you.
+
+   EXAMPLES
+	DataType FILE=test.txt
+	Display datatype information for test.txt, including available tools.
+
+	DataType FILE=image.jpg
+	Display datatype information for image.jpg, showing dimensions, color
+	depth, and available tools.
+
+	DataType FILE=image.jpg TARGET=image.ilbm
+	Convert image.jpg to IFF format, saving as image.ilbm.
+
+	DataType FILE=image.jpg TARGET=image.ilbm FORCE
+	Convert image.jpg to IFF format, overwriting image.ilbm if it exists.
+
+	DataType FILE=document.ftxt CONVERT
+	List all available text formats and prompt for selection, then convert
+	to the selected format.
+
+	DataType FILE=document.ftxt CONVERT TARGET=output.txt
+	List all available text formats, prompt for selection, then convert
+	to the selected format saving as output.txt.
+
+	DataType FILE=image.ilbm EDIT
+	Launch the editor for image.ilbm. If no EDIT tool is available, use
+	any available tool instead.
+
+	DataType FILE=document.ftxt VIEW
+	Launch the viewer for document.ftxt.
+
+	DataType FILE=image.jpg INFO
+	Launch the info tool for image.jpg.
+
+	DataType FILE=document.ftxt PRINT
+	Launch the print tool for document.ftxt.
+
+	DataType FILE=image.jpg MAIL
+	Launch the mail tool for image.jpg.

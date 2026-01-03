@@ -115,6 +115,7 @@ BOOL ConvertToIFF(STRPTR inputFile, STRPTR outputFile);
 
 static const char *verstag = "$VER: DataType 47.2 (2/1/2026)\n";
 static const char *stack_cookie = "$STACK: 4096\n";
+const long oslibversion = 47L;
 
 /* Main entry point */
 int main(int argc, char *argv[])
@@ -271,7 +272,7 @@ VOID Cleanup(VOID)
 /* Show usage information */
 VOID ShowUsage(VOID)
 {
-    Printf("Usage: DataType FILE=<filename> [OUTPUT=<outfile>] [CONVERT] [FORCE] [EDIT] [BROWSE] [INFO] [PRINT] [MAIL]\n");
+    Printf("Usage: DataType FILE=<filename> [OUTPUT=<outfile>] [CONVERT] [EDIT] [BROWSE] [INFO] [PRINT] [MAIL] [FORCE]\n");
     Printf("\n");
     Printf("Options:\n");
     Printf("  FILE=<filename>  - File to query datatype for (required)\n");
